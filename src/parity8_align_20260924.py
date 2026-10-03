@@ -1,36 +1,20 @@
 # -*- coding: utf-8 -*-
-"""8-bit parity，依 2026-09-24 課堂討論對齊（第七批）。
+"""比較六種模型擬合8-bit parity完整真值表的成功率與收斂速度。
 
-課堂要求與本程式的對應
-  1. 判定規則（Eq. 20）
-       2LNN / Perceptron：古典規則，不加絕對值，o > 0.5；訓練目標為 MSE on raw o
-       SIREN、PIP、2LPIP：加絕對值，|o| ≥ 0.5；訓練目標為 MSE on σ(10(|o| − 0.5))
-  2. SIREN
-       p = 0 ：o = sin(ω₀·(Σ xⱼwⱼ + b))                           （sine-out，與 2-bit Table IV 相同）
-       p ≥ 1 ：aⱼ = sin(ω₀·(Σ xᵢwᵢⱼ + bⱼ))，o = Σ aⱼw°ⱼ + b°        ω₀ = 1
-  3. 2LPIP（主定義與 2-bit Table IV、現行 Table V 相同）
-       aⱼ = (f_PI(x, w_j^H) + 1)/2 = (1 − cos(Σ xᵢwᵢⱼ + w_{j,m+1}))/2     Eq.(15)(18)
-       o  = f_PI(a, w°)，以 Eq.(14) 完整分支和計算                        Eq.(16)(14)
-     對照族（附表用）：
-       2LPIP-Eq19：o = −cos(Σ aᵢw°ᵢ + w°_{p+1})                           Eq.(19) 字面
-       2LPIP-coh ：o = −Re[e^{i b°} Π((1 − qᵢ) + qᵢe^{i w°ᵢ})]，qᵢ = cos²(φᵢ/2)
-       SIREN-rawMSE：前向與判定同 SIREN（|o| ≥ 0.5），訓練目標改為 MSE on raw o（2-bit 設計文件的 SIREN loss）
-  4. EX rescue（David 建議，8-bit Table V 加入）
-       同一次訓練延續到 10⁴ epoch：LSR 與 ME 以 E_max = 2500 計；
-       EX = 在 2500 < epoch ≤ 10⁴ 之間收斂的 run 數 / 2500 時失敗的 run 數。
-       Adam 狀態與參數連續不重設，等同「失敗者續訓」。
-  5. 收斂當下（更新前）的 θ* 存入每格 JSON。
+目前實作：
+  - 256筆資料同時用於訓練與成功判定，沒有獨立測試集。
+  - 預設p=0～8，每組40個種子（42～81）；參數初始化為N(0, 0.8²)。
+  - 使用float64與Adam（lr=0.02）；每個epoch先判定，再更新。
+  - 首次100%答對即記錄更新前參數；2500以內算成功，之後至10000算救回。
+  - 已成功的seed仍隨批次更新，直到所有seed都曾成功或達到訓練上限。
+  - 2LNN使用o > 0.5，其餘模型使用|o| >= 0.5分類。
+  - 2LNN與SIREN-rawMSE使用原始輸出的MSE；其餘使用
+    sigmoid(10(|o| - 0.5))的MSE。
+  - 全部設定完成後輸出至src/結果/<tag>/；目前沒有checkpoint或resume。
 
-固定協定（第一至六批相同）
-  資料：8-bit 完整真值表 K = 256，訓練與評估同一組
-  seeds：NumPy default_rng，42–81；θ⁽⁰⁾ ~ N(0, 0.8²)，抽樣序 Wh → bh → Wo → bo
-  Adam(lr = 0.02, β = (0.9, 0.999), ε = 1e-8)；float64；每 epoch 先判定再更新；epoch 自 1 起算
-  平台：PyTorch（autograd + torch.optim.Adam），PIP 家族以閉式計算
-
-用法
-  python parity8_align_20260924.py --selfcheck
-  python parity8_align_20260924.py --fams 2LNN SIREN 2LPIP --tag 主結果 --device cuda
-  python parity8_align_20260924.py --fams 2LPIP-Eq19 2LPIP-coh --tag 附表_2LPIP定義 --device cuda
+用法（從專案根目錄執行）：
+  python src/parity8_align_20260924.py --selfcheck
+  python src/parity8_align_20260924.py --fams 2LNN SIREN 2LPIP --tag comparison --device cuda
 """
 import argparse, csv, json, math, os, time
 from itertools import product
@@ -48,7 +32,11 @@ Z95 = 1.95996
 
 # ───────────────────────────── 前向 ─────────────────────────────
 def f_PI_general(V, W, wlast):
-    """Eq.(14) 的乘積形式，V 可為任意實數。V:(S,K,n)；W:(S,n)；wlast:(S,1)。回傳 (S,K)。"""
+    """以複數乘積計算PIP輸出，V可為實數。
+
+    V:(S,K,n)、W:(S,n)、wlast:(S,1)，回傳(S,K)。
+    S為種子數，K為資料筆數，n為輸入維度。
+    """
     c = torch.cos(math.pi * V / 2) ** 2
     d = torch.sin(math.pi * V / 2) ** 2
     fac = c + d * torch.exp(1j * W[:, None, :])
@@ -56,14 +44,14 @@ def f_PI_general(V, W, wlast):
 
 
 def fwd(X, P, p, fam, w0=1.0):
-    """回傳輸出 o(x, w)，形狀 (S, K)。"""
+    """計算各seed的模型輸出，形狀為(種子數, 資料筆數)；p=0表示無隱藏層。"""
     if p == 0:
         z = torch.einsum("km,sm->sk", X, P["Wo"]) + P["bo"]
         if fam == "2LNN":
             return z                                   # Perceptron
         if fam in ("SIREN", "SIREN-rawMSE"):
             return torch.sin(w0 * z)                   # SIREN sine-out
-        return -torch.cos(z)                           # PIP，Eq.(17)
+        return -torch.cos(z)                           # 無隱藏層的PIP輸出
     z = torch.einsum("km,smp->skp", X, P["Wh"]) + P["bh"][:, None, :]
     if fam == "2LNN":
         return torch.einsum("skp,sp->sk", torch.relu(z), P["Wo"]) + P["bo"]
@@ -73,18 +61,18 @@ def fwd(X, P, p, fam, w0=1.0):
         q = torch.cos(z / 2) ** 2
         fac = (1 - q) + q * torch.exp(1j * P["Wo"][:, None, :])
         return -(torch.exp(1j * P["bo"]) * torch.prod(fac, dim=-1)).real
-    a = (1 - torch.cos(z)) / 2                         # Eq.(15) with Eq.(18)
+    a = (1 - torch.cos(z)) / 2                         # 此處使用cosine隱藏層公式
     if fam == "2LPIP":
-        return f_PI_general(a, P["Wo"], P["bo"])      # Eq.(16) with Eq.(14)
+        return f_PI_general(a, P["Wo"], P["bo"])      # 複數乘積輸出層
     if fam == "2LPIP-Eq19":
-        return -torch.cos(torch.einsum("skp,sp->sk", a, P["Wo"]) + P["bo"])   # Eq.(19)
+        return -torch.cos(torch.einsum("skp,sp->sk", a, P["Wo"]) + P["bo"])   # 負cosine輸出層
     raise ValueError(fam)
 
 
 def decide(o, fam):
     if fam == "2LNN":
-        return (o > CFG["tau"]).double()               # 古典規則，不加絕對值
-    return (o.abs() >= CFG["tau"]).double()            # Eq.(20)，加絕對值
+        return (o > CFG["tau"]).double()               # 2LNN直接對原始輸出設門檻
+    return (o.abs() >= CFG["tau"]).double()            # 其餘模型對輸出絕對值設門檻
 
 
 def loss_per_seed(o, y, fam):
@@ -121,7 +109,7 @@ def exact_median(v):
     return float(s[n // 2]) if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
 
-# ───────────────────────────── 訓練一格 ─────────────────────────────
+# ───────────────────────────── 訓練一組模型與p設定 ─────────────────────────────
 def run_cell(p, fam, X, y, device, w0=1.0):
     S, EMAX, EX = CFG["n_runs"], CFG["emax"], CFG["ex"]
     seeds, P = init_params(p, device)
@@ -136,6 +124,7 @@ def run_cell(p, fam, X, y, device, w0=1.0):
             acc = (decide(o, fam) == y).double().mean(dim=1).cpu().tolist()
         for i in range(S):
             if conv[i] != -1:
+                # 首次成功後不覆寫θ*或acc2500；此seed仍參與後續批次更新。
                 continue
             if ep <= EMAX:
                 acc2500[i] = acc[i]
