@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""比較六種模型擬合六個8維二元分類任務的成功率與收斂速度。
+"""比較六種模型擬合8-bit parity完整真值表的成功率與收斂速度。
 
 目前實作：
-  - 所選任務的完整訓練資料同時用於訓練與成功判定，不評估測試集。
+  - 256筆資料同時用於訓練與成功判定，沒有獨立測試集。
   - 預設p=0～8，每組40個種子（42～81）；參數初始化為N(0, 0.8²)。
   - 使用float64與Adam（lr=0.02）；每個epoch先判定，再更新。
   - 首次100%答對即記錄更新前參數；2500以內算成功，之後至10000算救回。
@@ -10,8 +10,8 @@
   - 2LNN使用o > 0.5，其餘模型使用|o| >= 0.5分類。
   - 2LNN與SIREN-rawMSE使用原始輸出的MSE；其餘使用
     sigmoid(10(|o| - 0.5))的MSE。
-  - --task 選擇任務，--prepare-only 只準備資料。
-  - 結果保存於 run/<task>/<tag>/<run_id>/，支援 --resume。
+  - --task / --data-dir / --prepare-only 準備六種任務資料；新任務訓練尚未接入。
+  - 全部設定完成後輸出至src/結果/<tag>/；目前沒有checkpoint或resume。
 
 用法（從專案根目錄執行）：
   python src/parity8_align_20260924.py --selfcheck
@@ -113,39 +113,14 @@ def exact_median(v):
 
 
 # ───────────────────────────── 訓練一組模型與p設定 ─────────────────────────────
-def run_cell(p, fam, X, y, device, w0=1.0, session=None):
+def run_cell(p, fam, X, y, device, w0=1.0):
     S, EMAX, EX = CFG["n_runs"], CFG["emax"], CFG["ex"]
     seeds, P = init_params(p, device)
     opt = torch.optim.Adam([v for v in P.values() if v.numel() > 0],
                            lr=CFG["lr"], betas=(0.9, 0.999), eps=1e-8)
     conv, acc2500, theta = [-1] * S, [0.0] * S, [None] * S
-    next_epoch, elapsed = 1, 0.0
-    if session:
-        saved = session.restore(P, opt, seeds)
-        if saved:
-            conv, acc2500, theta = saved["conv"].copy(), saved["acc2500"].copy(), saved["theta"].copy()
-            next_epoch, elapsed = saved["next_epoch"], saved["elapsed_sec"]
-    segment_start = time.perf_counter()
-
-    def save_boundary(ep, phase, result=None):
-        nonlocal elapsed, segment_start
-        if torch.device(device).type == "cuda":
-            torch.cuda.synchronize(device)
-        elapsed += time.perf_counter() - segment_start
-        if result is not None:
-            result["wall_sec"] = round(elapsed, 1)
-        if session:
-            session.save(P, opt, seeds, conv, acc2500, theta, ep, phase, elapsed, result)
-        segment_start = time.perf_counter()
-
-    if session and session.loaded is None:
-        save_boundary(0, "initial")
-    if session and session.stop.requested:
-        from experiment_runner import TrainingStopped
-        raise TrainingStopped()
-    phase = "after_step"
-    for ep in range(next_epoch, EX + 1):
-        newly_successful = False
+    t0 = time.time()
+    for ep in range(1, EX + 1):
         o = fwd(X, P, p, fam, w0)
         L = loss_per_seed(o, y, fam)
         with torch.no_grad():
@@ -157,23 +132,15 @@ def run_cell(p, fam, X, y, device, w0=1.0, session=None):
             if ep <= EMAX:
                 acc2500[i] = acc[i]
             if acc[i] == 1.0:                                         # 先判定：更新前的參數即 θ*
-                newly_successful = True
                 conv[i] = ep
                 theta[i] = {k: P[k][i].detach().cpu().tolist() for k in P if P[k].numel() > 0}
         if all(c != -1 for c in conv):
-            phase = "all_success_before_step"
             break
         opt.zero_grad(); L.sum().backward(); opt.step()
-        # At EX the last Adam step is preserved; its weights are not re-evaluated.
-        if session and ep < EX and (ep % session.every == 0 or ep == EMAX or newly_successful or session.stop.requested):
-            save_boundary(ep, "after_step")
-            if session.stop.requested:
-                from experiment_runner import TrainingStopped
-                raise TrainingStopped()
     ok = [c for c in conv if c != -1 and c <= EMAX]
     rescued = [c for c in conv if c > EMAX]
     lo, hi = wilson(len(ok), S)
-    result = dict(
+    return dict(
         model=fam, p=p, omega0=(w0 if fam.startswith("SIREN") else None), lr=CFG["lr"], init="N(0,0.8^2)",
         decision=("o > 0.5" if fam == "2LNN" else "|o| >= 0.5"),
         loss=("MSE on o" if fam in RAW_MSE else "MSE on sigmoid(10(|o|-0.5))"),
@@ -184,11 +151,7 @@ def run_cell(p, fam, X, y, device, w0=1.0, session=None):
         conv_by_seed={str(sd): c for sd, c in zip(seeds, conv)},
         acc_at_emax={str(sd): a for sd, a in zip(seeds, acc2500)},
         theta_star={str(sd): th for sd, th in zip(seeds, theta) if th is not None},
-        wall_sec=0.0, device=str(device), torch=str(torch.__version__))
-    if session:
-        result.update(task=session.config["task"], n_samples=len(y), data_sha256=session.config["data"]["sha256"])
-    save_boundary(ep, phase, result)
-    return result
+        wall_sec=round(time.time() - t0, 1), device=str(device), torch=torch.__version__)
 
 
 # ───────────────────────────── 自我檢查 ─────────────────────────────
@@ -240,10 +203,49 @@ def emit(rows, out, tag):
 
 
 def main():
-    import sys
-    from experiment_runner import main as run_main
-    return run_main(sys.modules[__name__])
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fams", nargs="+", default=FAMS, choices=FAMS)
+    ap.add_argument("--p", type=int, nargs="+", default=list(range(9)))
+    ap.add_argument("--device", default="cpu")
+    ap.add_argument("--tag", default="主結果")
+    ap.add_argument("--selfcheck", action="store_true")
+    ap.add_argument("--task", choices=TASKS, default="parity")
+    ap.add_argument("--data-dir", default="data")
+    ap.add_argument("--prepare-only", action="store_true")
+    a = ap.parse_args()
+    dev = torch.device(a.device)
+    Xn = np.array(list(product([0, 1], repeat=CFG["n_bits"])), dtype=np.float64)
+    X = torch.tensor(Xn, device=dev)
+    y = torch.tensor((Xn.sum(1) % 2).astype(np.float64), device=dev)
+    selfcheck(X, dev)
+    if a.selfcheck:
+        return
+    if a.prepare_only:
+        try:
+            Xn, yn, metadata = load_task(a.task, a.data_dir)
+        except (DataError, OSError) as exc:
+            ap.exit(1, f"資料準備失敗：{exc}\n")
+        print(f"{a.task}: X={Xn.shape}, y={yn.shape}, float64")
+        print(f"SHA-256={metadata['sha256']}\n快取：{metadata['cache']}")
+        return
+    if a.task != "parity":
+        ap.error("本次版本僅接入新任務的資料準備，請加 --prepare-only；新任務訓練與 run/checkpoint/resume 尚未實作。")
+    print("\n2LNN：o > 0.5、MSE on o｜SIREN / PIP / 2LPIP：|o| ≥ 0.5、MSE on σ(10(|o|−0.5))｜K=256｜"
+          "seeds 42–81（NumPy default_rng）｜E_max %d，EX 續訓至 %d｜Adam lr %g｜N(0,0.8²)｜%s｜torch %s"
+          % (CFG["emax"], CFG["ex"], CFG["lr"], dev, torch.__version__))
+    print("%-11s%4s%5s%9s%19s%9s%9s%8s" % ("Model", "p", "TP", "succ", "Wilson 95% CI", "EX", "ME", "秒"))
+    rows, t0 = [], time.time()
+    for fam in a.fams:
+        for p in a.p:
+            r = run_cell(p, fam, X, y, dev)
+            rows.append(r)
+            print("%-11s%4d%5d%6d/40%19s%9s%9s%8.1f" % (
+                fam, p, r["n_params"], r["succ"], "[%.1f, %.1f]" % (r["wilson_lo"], r["wilson_hi"]),
+                "%d/%d" % (r["ex_rescued"], r["ex_failed_at_emax"]),
+                ("%g" % r["median_epoch"]) if r["median_epoch"] is not None else "—", r["wall_sec"]), flush=True)
+    emit(rows, os.path.join(HERE, "結果", a.tag), a.tag)
+    print("總計 %d 格，%.1f 分鐘" % (len(rows), (time.time() - t0) / 60))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
