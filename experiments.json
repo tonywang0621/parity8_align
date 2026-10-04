@@ -1,0 +1,10 @@
+{
+  "experiments": [
+    {"name": "parity", "task": "parity"},
+    {"name": "linearly_separable", "task": "linearly_separable"},
+    {"name": "mnist_pca", "task": "mnist_pca"},
+    {"name": "mnist_pca_small", "task": "mnist_pca_small"},
+    {"name": "hidden_manifold", "task": "hidden_manifold"},
+    {"name": "two_curves", "task": "two_curves"}
+  ]
+}
