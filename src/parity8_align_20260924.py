@@ -10,6 +10,7 @@
   - 2LNN使用o > 0.5，其餘模型使用|o| >= 0.5分類。
   - 2LNN與SIREN-rawMSE使用原始輸出的MSE；其餘使用
     sigmoid(10(|o| - 0.5))的MSE。
+  - --task / --data-dir / --prepare-only 準備六種任務資料；新任務訓練尚未接入。
   - 全部設定完成後輸出至src/結果/<tag>/；目前沒有checkpoint或resume。
 
 用法（從專案根目錄執行）：
@@ -18,6 +19,8 @@
 """
 import argparse, csv, json, math, os, time
 from itertools import product
+
+from experiment_tasks import TASKS, DataError, load_task
 
 import numpy as np
 import torch
@@ -206,6 +209,9 @@ def main():
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--tag", default="主結果")
     ap.add_argument("--selfcheck", action="store_true")
+    ap.add_argument("--task", choices=TASKS, default="parity")
+    ap.add_argument("--data-dir", default="data")
+    ap.add_argument("--prepare-only", action="store_true")
     a = ap.parse_args()
     dev = torch.device(a.device)
     Xn = np.array(list(product([0, 1], repeat=CFG["n_bits"])), dtype=np.float64)
@@ -214,6 +220,16 @@ def main():
     selfcheck(X, dev)
     if a.selfcheck:
         return
+    if a.prepare_only:
+        try:
+            Xn, yn, metadata = load_task(a.task, a.data_dir)
+        except (DataError, OSError) as exc:
+            ap.exit(1, f"資料準備失敗：{exc}\n")
+        print(f"{a.task}: X={Xn.shape}, y={yn.shape}, float64")
+        print(f"SHA-256={metadata['sha256']}\n快取：{metadata['cache']}")
+        return
+    if a.task != "parity":
+        ap.error("本次版本僅接入新任務的資料準備，請加 --prepare-only；新任務訓練與 run/checkpoint/resume 尚未實作。")
     print("\n2LNN：o > 0.5、MSE on o｜SIREN / PIP / 2LPIP：|o| ≥ 0.5、MSE on σ(10(|o|−0.5))｜K=256｜"
           "seeds 42–81（NumPy default_rng）｜E_max %d，EX 續訓至 %d｜Adam lr %g｜N(0,0.8²)｜%s｜torch %s"
           % (CFG["emax"], CFG["ex"], CFG["lr"], dev, torch.__version__))

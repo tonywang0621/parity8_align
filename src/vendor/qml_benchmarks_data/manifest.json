@@ -1,0 +1,13 @@
+{
+  "commit": "95e5a07e8e9e75ba7e24e67fb32b030112a1309a",
+  "files": {
+    "linearly_separable.py": "3013745d66868c79af9ba63cc8d62aae0ee0b33f43c7ed960bcb5a7179aa9d5a",
+    "two_curves.py": "4290f5359030bc10388044e2ecb3010343c6a75ac7879d0a021ac0f68b45bff0",
+    "mnist.py": "9273619ae3e1c65c79692e41984c1207f1798c4308d3b84426166b9e72572ac8",
+    "hidden_manifold.py": "b269787d47d0f2a04bb397c8e4649ff576eef354882361cecb5a3e2faef3ca4b",
+    "scripts/generate_two_curves.py": "9b3e06f8a539f8a79ccb0d106e1fe88d18668d722cd6579d4886502a21a56492",
+    "scripts/generate_mnist.py": "3ee247d6253a4f820c1b7e9775162a63abc6be26fd8a5df479e6125c19b5d2b0",
+    "scripts/generate_hidden_manifold.py": "8a172f4c77dd87540263cd8e4cc800a80effb48dca344f59f22f992babea6a8b",
+    "scripts/generate_linearly_separable.py": "ad54193f388fc68192b0839b990d4500dcd4a11bfc68e7b242576c3ce1b1db6c"
+  }
+}

@@ -1,0 +1,8 @@
+Copyright 2024 Xanadu Quantum Technologies Inc.
+Source: https://github.com/XanaduAI/qml-benchmarks
+Commit: 95e5a07e8e9e75ba7e24e67fb32b030112a1309a
+The four Python source files are unmodified copies of src/qml_benchmarks/data/.
+Apache License 2.0: see LICENSE.
+mnist.py is retained for reference; experiment_tasks.py adapts its PCA branch
+without importing Keras/torchvision or processing test data.
+scripts/ contains unmodified copies of the four official paper/benchmarks scripts.

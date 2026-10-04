@@ -1,0 +1,16 @@
+{
+  "git_commit": "e4b1ebb373788c3e5040b28b3d4f653ab2921aa7",
+  "hash_method": "sha256 ast.dump(function, include_attributes=False)",
+  "functions": {
+    "f_PI_general": "f9515530170ab1fafd5663236b931ad69ebbd5a1d8cd145570e48ea5d377742e",
+    "fwd": "e7d30660114b23bcecf3f57a8dddc156603fb30a258bbe91e2477adba6b75201",
+    "decide": "df035800059008f62e974cec39451fec21a1dd03c5d255c1f65dafb6c854b366",
+    "loss_per_seed": "550d46ca057b52d1bb2cab7c836399f0c367b5862a5db52c1b902987157730b4",
+    "init_params": "9e3579ac8699a137b62efdfe620d8da7af4dd79d5c22179b90396c60e926f3e3",
+    "wilson": "b025fec98d6f5abe289e2086a8d38b12231dc0a7fe1a10cae9112ec6543967c2",
+    "exact_median": "e3ff1993116c5da06e8b22316c7c6e1e0bcbec1d21b963602b4b7d3ea53cc2b7",
+    "run_cell": "cd678b5169bdebfe051a6fbd9b08b4d81d767728c0a14375422aa40269fb6762",
+    "selfcheck": "2c09033e117bd27d69feef21b8e34450f748a9bd238b25b973af096716d98ef2",
+    "emit": "7705e65752a82074a3b8d73c52f263e4de58f963dfc88fb4a4c540980c87a4fd"
+  }
+}
