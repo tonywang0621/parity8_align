@@ -1,0 +1,10 @@
+# AMD Instinct MI300X / ROCm 6.4.3 container, Linux x86_64, Python 3.12.
+# Install in the activated conda environment:
+# python -m pip install -r requirements.txt
+# Data versions match the verified dataset-generation environment.
+# Explicit ROCm build prevents selection of CPU/NVIDIA torch builds.
+--extra-index-url https://download.pytorch.org/whl/rocm6.4
+numpy==2.5.3
+scipy==1.18.1
+scikit-learn==1.9.1
+torch==2.9.1+rocm6.4

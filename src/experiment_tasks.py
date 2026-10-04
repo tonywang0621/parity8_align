@@ -309,7 +309,7 @@ def load_task(task, data_dir="data"):
         try:
             X, y, details = generate(task, root)
         except ImportError as exc:
-            raise DataError("缺少資料準備套件；請執行 python -m pip install -r requirements-data.txt") from exc
+            raise DataError("缺少資料準備套件；請執行 python -m pip install -r requirements.txt") from exc
         X, y = np.ascontiguousarray(X, dtype=np.float64), np.ascontiguousarray(y, dtype=np.float64)
         validate(task, X, y)
         meta = {"format_version": 1, "task": task, "n_samples": len(y),
