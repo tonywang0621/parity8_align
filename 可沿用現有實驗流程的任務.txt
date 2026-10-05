@@ -1,0 +1,427 @@
+可沿用現有實驗流程的任務
+========================
+
+交接狀態（供未讀過對話的AI使用）
+--------------------------------
+使用者要做的事：把本文件列出的5個新任務接到既有6種模型，
+保留原本的模型、訓練計算與成功判定；新增run/分層保存及中斷續訓。
+不是重現論文的調參／泛化評估流程。新增存檔功能不改變模型或訓練規則。
+
+目前本次交付只有這份TXT；尚未新增任務、run/輸出或resume程式，
+也沒有跑新任務訓練。使用者要求先寫好規格，交由其他人實作。
+下一次若被要求依本文件實作，請完成下方第七至十一節的接入與驗證。
+閱讀本文件本身不代表需要立即啟動長時間完整訓練。
+
+路徑規則（適用於本機與遠端）：
+- 專案根目錄記為 ./，也就是包含src/與本TXT的資料夾。
+- 文件、命令範例、資料快取、輸出設定及可攜式metadata都使用相對路徑。
+- 不得硬編碼磁碟機代號、使用者家目錄、掛載點或特定機器的絕對路徑。
+- 所有命令範例預設先在專案根目錄執行。
+- 程式內以入口檔位置定位專案根目錄：
+  PROJECT_ROOT = Path(__file__).resolve().parent.parent
+  此式適用於位於src/內的入口檔；其他位置須依其相對層級調整。
+- --data-dir、--resume等相對路徑參數統一相對於PROJECT_ROOT解析，
+  不依排程器、SSH或啟動程式當下的工作目錄而變動。
+- 資料快取為 ./data/；所有新實驗（含Parity）的結果與權重統一放在
+  ./run/<task>/<tag>/<run_id>/，詳細結構見第九節。
+  不再向舊的src/結果/寫入新結果；保留舊檔，不自動搬移或刪除。
+- 在metadata中保存專案相對路徑；第三方程式需要絕對路徑時，
+  可於執行時由PROJECT_ROOT組合取得，但不保存機器專屬路徑。
+- 網路資料來源的HTTPS網址保留，網址不是本機檔案路徑。
+
+先讀取專案適用的AGENTS.md（如有），並檢查使用者未提交的變更。
+不得覆寫使用者既有修改。下列檔名及CLI是建議的實作介面，尚未存在；
+模型及實驗流程的固定條件則是使用者已明確指定的要求。
+
+一、目的與範圍
+
+使用目前 src/parity8_align_20260924.py 的模型與訓練流程，
+比較同一套設定在不同「8維輸入、二元分類」任務上的擬合能力。
+
+本清單只整理可測試項目，不代表程式已接入這些新任務。
+目前可以直接執行的仍是 8-bit Parity；新增任務需要接入資料、
+轉換標籤，以及在輸出路徑中區分任務，但不需要修改模型公式。
+「可測試」表示資料介面相容，不保證能達到100%正確率。
+
+二、保持不變的模型與實驗流程
+
+1. 模型：2LNN、SIREN、2LPIP、2LPIP-Eq19、2LPIP-coh、SIREN-rawMSE。
+2. 輸入維度固定為8、輸出維度固定為1；隱藏神經元 p=0～8。
+3. 各模型原有的前向公式、分類規則與損失函數不變。
+4. 每組設定40個種子（42～81），以 NumPy default_rng 初始化。
+5. 初始參數分布 N(0, 0.8²)，抽樣順序 Wh → bh → Wo → bo。
+6. PyTorch float64；Adam lr=0.02、betas=(0.9, 0.999)、eps=1e-8。
+7. 每個epoch使用全部訓練資料；先判定正確率，再更新參數。
+8. 首次在全部訓練資料達到100%正確時，記錄epoch及更新前參數 θ*。
+9. epoch ≤ 2500 算基本預算內成功；2500 < epoch ≤ 10000 算延長訓練救回。
+10. 延長訓練不重設參數或Adam狀態。
+11. 已成功的seed仍隨批次更新，但保留首次成功紀錄；所有seed都曾成功便停止。
+12. 保留成功次數、Wilson 95%信賴區間、成功者收斂epoch中位數與範圍、
+    救回數、逐seed紀錄與耗時。保存時機依新需求調整：定期保存checkpoint，
+    每組設定完成便保存該組結果與成功權重，並更新CSV；全部完成再產生完整彙總。
+
+新任務只使用所選資料集的訓練部分，訓練與成功判定使用同一份資料。
+測試集不參與這份「完全沿用現有流程」的實驗。
+官方標籤 -1/+1 統一轉為 0/1（y_new=(y_old+1)/2）。
+不同任務的筆數可以不同；相同epoch不等於相同運算量或耗時。
+
+三、可測試的任務
+
+【1】8-bit Parity（目前已實作）
+目的：判斷8個位元中，1的數量是奇數還是偶數。
+來源：現有程式自動生成。
+輸入：全部256種8-bit組合，每筆8個0或1。
+標籤：偶數為0，奇數為1。
+本流程使用資料：全部256筆。
+
+【2】Linearly separable — 8維
+目的：判斷實數資料點位於線性分界的哪一側。
+來源：第一篇論文的官方資料生成程式。
+設定：n_features=8，n_samples=300，margin=0.02×8=0.16。
+輸入：從[-1,1]^8抽樣、排除分界附近區域的8維實數向量。
+標籤：線性分界的兩側，沿用官方程式標籤再轉為0/1。
+本流程使用資料：官方生成並切分後的240筆訓練資料；60筆測試資料不使用。
+入口：paper/benchmarks/generate_linearly_separable.py。
+
+【3】MNIST PCA — 8維
+目的：區分手寫數字3與5。
+來源：MNIST原始訓練資料及第一篇論文的官方前處理程式。
+輸入：篩選3與5後，將28×28影像攤平、標準化，再以PCA降到8維。
+標籤：3對應-1、5對應+1，轉換後為3→0、5→1。
+本流程使用資料：上述處理後的全部3／5訓練樣本。
+前處理：標準化與PCA只在訓練資料擬合；原始測試資料不參與本實驗。
+入口：paper/benchmarks/generate_mnist.py（preprocessing="pca", n_features=8）。
+
+【4】MNIST PCA− — 8維
+目的：在較少訓練樣本下區分手寫數字3與5。
+來源：MNIST PCA的官方小樣本版本。
+輸入及標籤：與MNIST PCA — 8維相同。
+設定：官方流程抽取250筆訓練資料及250筆測試資料。
+本流程使用資料：只使用250筆訓練資料。
+注意：核對的官方程式使用Python random.choices有放回抽樣；
+      250筆不保證互不重複，且僅設定NumPy種子不足以固定這個抽樣。
+      實作時應固定Python random種子並保存抽樣後資料，讓所有模型用同一份資料。
+入口：paper/benchmarks/generate_mnist.py（preprocessing="pca-", n_features=8）。
+
+【5】Hidden manifold — 8維
+目的：從觀測向量學習由隱藏變數及教師網路決定的類別。
+來源：第一篇論文的官方隨機生成程式。
+設定：n_features=8，manifold_dimension=6，n_samples=300。
+輸入：6維潛在變數經映射形成的8維實數向量。
+標籤：潛在變數經固定隨機教師網路計算，再以中位數分成兩類。
+本流程使用資料：切分後的240筆訓練資料；60筆測試資料不使用。
+模型只取得8維觀測向量，不取得6維潛在變數或教師網路參數。
+入口：paper/benchmarks/generate_hidden_manifold.py中的hidden_manifold部分，
+      不是hidden_manifold_diff。
+
+【6】Two curves — 8維
+目的：判斷資料點來自哪一條帶有雜訊的曲線。
+來源：第一篇論文的官方傅立葉曲線生成程式。
+設定：n_features=8，n_samples=300，degree=5，offset=0.1，noise=0.01。
+輸入：曲線嵌入8維空間、加入雜訊並依官方流程標準化後的座標。
+標籤：所屬曲線，沿用官方程式標籤再轉為0/1。
+本流程使用資料：切分後的240筆訓練資料；60筆測試資料不使用。
+入口：paper/benchmarks/generate_two_curves.py中掃描n_features的部分。
+注意：已核對版本把這部分檔案也寫入two_curves_diff資料夾，
+      應依8維、degree=5及offset=0.1辨識，不只看資料夾名稱。
+
+四、結果可以解釋什麼
+
+這是固定模型與訓練設定的「擬合／最佳化實驗」。
+成功率表示不同初始化下，模型在指定預算內完整擬合所選訓練資料的比例。
+它不是未見資料的測試準確率，也不等於重現第一篇論文的benchmark流程。
+如果某個任務所有seed都未達100%，成功率為0、收斂中位數無值，仍是有效結果。
+
+保留目前程式的一項記錄行為：對提早成功的seed，acc_at_emax記錄的是
+首次成功時的準確率，不一定是第2500個epoch當下的準確率。
+
+PIP在連續資料上仍使用現有cosine前向公式，不改成另一套完整PIP輸入公式。
+因此結果應描述為「目前程式所定義的PIP模型在連續輸入上的表現」。
+原有Parity公式自我檢查需繼續使用獨立的二元真值表，不套到新任務資料上。
+
+五、不包含的任務
+
+第一篇的Bars & stripes、MNIST CG，以及固定10維的各種diff任務，
+不符合此處固定8維輸入的條件，因此不列入。
+第二篇SIREN的影像、音訊、PDE、SDF及hypernetwork任務，
+不能在同時保留8維輸入、單一分類輸出與現有分類流程下直接替換資料執行。
+
+六、核對來源
+
+第一篇：Better than classical? The subtle art of benchmarking quantum machine learning models
+https://arxiv.org/abs/2403.07059
+
+官方資料生成腳本（固定核對版本）：
+https://github.com/XanaduAI/qml-benchmarks/tree/95e5a07e8e9e75ba7e24e67fb32b030112a1309a/paper/benchmarks
+
+官方資料生成函數：
+https://github.com/XanaduAI/qml-benchmarks/tree/95e5a07e8e9e75ba7e24e67fb32b030112a1309a/src/qml_benchmarks/data
+
+既有模型與流程：src/parity8_align_20260924.py
+
+七、實作時具體要做的工作
+
+1. 基準程式：src/parity8_align_20260924.py。
+   開始前保存基準副本或記錄Git版本，供回歸比較。
+   保留 f_PI_general、fwd、decide、loss_per_seed、init_params、
+   wilson、exact_median的數學運算；run_cell可加入存檔／恢復邏輯，
+   但其計算順序、成功判定及Adam更新行為必須保持一致。
+   尤其不要為了新任務變更成功條件、學習率、batch、epoch或loss。
+
+2. 新增獨立的資料模組（建議 src/experiment_tasks.py）。
+   提供 load_task(task, data_dir)，回傳 X、y、metadata。
+   X：float64，形狀(K,8)，所有值有限。
+   y：float64，形狀(K,)，值只能是0或1，並檢查兩個類別都存在。
+   K使用實際載入筆數，不得把新任務補成／截成256筆。
+   連續特徵不得二值化，不得額外加角度縮放、截斷或重新正規化，
+   除非那就是本文件所指定的官方資料生成／前處理步驟。
+
+3. 修改main的資料入口。
+   每次先用獨立Parity真值表執行原selfcheck。
+   若傳入--selfcheck，檢查後立即退出，不下載MNIST或準備其他任務資料。
+   正式實驗再載入所選任務一次，所有模型、p及40個seed共用相同X、y。
+   將其轉成指定device上的float64張量，原樣交給run_cell。
+   不得每個模型、seed或epoch重新生成／抽樣資料。
+
+4. 模型與p的迴圈及run_cell流程保持不變。
+   不加入交叉驗證、超參數搜尋、驗證集選模、測試準確率選模、
+   新的early stopping、mini-batch或學習率排程。
+   允許為resume保存所有seed的當前狀態，包含未成功者；
+   未成功者仍不能被算成成功解，也不能填入theta_star。
+   大型任務若記憶體不足，回報所需資源，不暗中減少資料或改batch。
+   模型計算仍維持原本連續輸入的cosine實作。
+
+5. 更新顯示與結果的任務資訊。
+   原本固定的K=256改成實際K；保留既有統計欄位及意義。
+   任務識別、實際筆數及資料SHA-256等可增加為JSON／CSV中繼資料，
+   不得把原本的成功率重新命名成測試準確率。
+   保留首次成功參數與失敗seed的原有統計處理。
+   增加run/資料夾管理與checkpoint，依第九、十節執行。
+
+八、資料重現規則
+
+1. 使用第六節固定commit的官方生成腳本與函數。
+   取得原始碼時保留來源、版本與需要的授權聲明。
+   不依模型結果挑選資料seed，也不挑選對PIP特別有利的樣本。
+
+2. 需要與官方腳本的8維資料一致時，必須保留原腳本的隨機呼叫順序。
+   例如腳本依序生成2至20維，不能只設定相同seed後直接生成8維，
+   就宣稱與官方8維資料相同。可照原順序生成至8維，再取8維訓練檔。
+   資料seed與模型初始化seed是兩件事：
+   - linearly_separable：官方腳本NumPy seed=42。
+   - hidden_manifold：官方腳本NumPy seed=3。
+   - two_curves：官方腳本NumPy seed=3。
+   使用官方train_test_split(test_size=0.2)的順序，不自行加stratify。
+
+3. MNIST取原始訓練split中的3與5。
+   標準化及8維PCA從完整3／5訓練資料擬合，再產生PCA−的250筆子集。
+   小樣本任務不能先取250筆才擬合PCA，否則不是此處指定的處理流程。
+   若官方PCA實作走隨機演算法，固定隨機狀態並記錄依賴版本。
+   PCA−原腳本沒有固定Python random種子；建議補設random.seed(42)，
+   並明確記為本專案的重現性補充，不宣稱逐筆等同論文發布資料。
+   保留有放回抽樣，不自行改成250個不重複樣本。
+
+4. Two curves的官方函數在切分前對完整生成資料做StandardScaler。
+   本實驗為保留指定資料流程，沿用這一步並在metadata中記錄；
+   不以更換成另一種前處理的資料來冒稱相同官方資料。
+   分出的測試列不交給模型訓練或成功判定。
+
+5. 保存處理完成的X、y及metadata快取（建議data/子目錄，非doc/）。
+   metadata至少包含任務ID、筆數、各類數量、來源commit、
+   生成參數、資料seed、split及前處理方式、依賴版本、SHA-256。
+   hash應針對明確記錄dtype／shape／排列的X與y內容，或保存後檔案；
+   記錄採用哪一種hash方法。
+   重跑時優先讀取同一份快取，並驗證維度、標籤、筆數及hash。
+   不默默覆寫有效快取；資料缺失或下載失敗時清楚報錯，不用假資料替代。
+
+九、命令介面及run/資料夾配置（待實作，現在不能直接使用）
+
+新增--task，預設parity，接受以下6個值：
+  parity
+  linearly_separable
+  mnist_pca
+  mnist_pca_small
+  hidden_manifold
+  two_curves
+
+新增--data-dir指定處理後資料快取，預設data（相對於專案根目錄）。
+新增--prepare-only：只準備／驗證所選任務資料，不啟動訓練、不建立run。
+保留既有--fams、--p、--device、--tag、--selfcheck。
+既有不帶--task的命令仍執行Parity，但新的結果改放run/。
+--selfcheck也不建立run資料夾。
+
+新增--checkpoint-every，正整數，建議預設100，表示每100個完整epoch存檔。
+新增--resume <run相對路徑>，恢復該次實驗及其尚未完成的模型設定。
+--resume不可與--prepare-only或--selfcheck同時使用。
+
+所有任務的新實驗都使用以下結構；run是單數，不是runs：
+
+run/
+  <task>/
+    <tag>/
+      <run_id>/
+        config.json
+        data_metadata.json
+        progress.json
+        results/
+          <tag>_主結果.csv
+          <tag>_逐seed.csv
+          2LPIP_p4.json
+          ...
+        weights/
+          2LPIP_p4_theta_star.pt
+          ...
+        checkpoints/
+          2LPIP_p4_latest.pt
+          2LPIP_p4_previous.pt
+          ...
+
+- <run_id>自動使用UTC時間戳加隨機尾碼，例如20261003T150000Z_a1b2c3。
+  同task、tag重新執行也要開新run；使用原子建立避免同秒啟動碰撞。
+- <task>及<tag>必須是單一安全資料夾名稱，不接受../或路徑分隔符。
+- 每次run代表一個任務及當次選擇的fams、p；預設54組設定、每組40個seed。
+- 開始時印出run相對路徑與可複製的resume指令。
+- config.json記錄完整實驗設定、模型／p執行順序、程式版本或雜湊、
+  Python／NumPy／PyTorch版本、device、dtype、checkpoint格式版本及建立時間。
+- data_metadata.json記錄資料來源、X/y的形狀、順序、hash、前處理及快取相對路徑。
+- progress.json記錄每組pending／running／completed狀態、已存檔epoch、
+  以及整次run是否完成；它是進度索引，不能取代checkpoint中的完整狀態。
+- results/保留原JSON與兩份CSV的統計欄位；每完成一組就原子更新其結果及彙總。
+  尚有未完成設定時標記為部分結果，不假稱完整54組已完成。
+- weights/保存首次成功參數θ*，可每組一個檔案、內含以seed編號索引的參數。
+  記錄model、p、seed、首次成功epoch、判定規則及必要設定，並提供載入範例。
+  未成功seed沒有θ*；檔案可含空的theta_star及狀態，不得捏造成功權重。
+- checkpoints/保存完整續訓狀態，包括未成功seed的當前權重；
+  latest.pt和theta_star.pt用途不同，不能拿首次成功權重代替當前狀態續訓。
+- 在一組完成時，先保存包含完成狀態與統計結果的checkpoint，再輸出其結果與權重。
+  若中斷在輸出途中，resume可依completed checkpoint補齊衍生檔案，不必重訓。
+- 生成檔保留在run/，未來實作時新增根目錄.gitignore規則 /run/，保留既有/doc/。
+  本次只修改TXT，不實際建立run或變更.gitignore。
+
+實作完成後，以下命令從專案根目錄執行：
+
+# 準備資料，不訓練
+python src/parity8_align_20260924.py --task linearly_separable --data-dir data --prepare-only
+
+# 開始一個新實驗，會自動產生新的run_id
+python src/parity8_align_20260924.py --task linearly_separable --tag full_run --checkpoint-every 100
+
+# 其他新任務：每條命令各自建立一個run
+python src/parity8_align_20260924.py --task mnist_pca --tag full_run
+python src/parity8_align_20260924.py --task mnist_pca_small --tag full_run
+python src/parity8_align_20260924.py --task hidden_manifold --tag full_run
+python src/parity8_align_20260924.py --task two_curves --tag full_run
+
+# 原有Parity命令保持有效，新結果放run/parity/full_run/<run_id>/
+python src/parity8_align_20260924.py --tag full_run
+
+# 恢復同一個run：將下列run_id換成實際資料夾名稱
+python src/parity8_align_20260924.py --resume run/linearly_separable/full_run/20261003T150000Z_a1b2c3
+
+python代表遠端已安裝相依套件的Python執行檔；依環境也可用python3。
+若使用專案內Linux虛擬環境，可用./.venv/bin/python代替python。
+實作交付時提供相依套件安裝方式與實際可用指令，不填入本機絕對路徑。
+
+十、checkpoint與resume規格
+
+A. 保存粒度與內容
+
+目前40個seed共用同一個批次張量與Adam，checkpoint必須以「整組model+p」
+保存全部seed，不得為resume改成40個不同的訓練流程。
+每份checkpoint至少包含：
+1. 格式版本、task、model、p、omega0、完整CFG、seed列表及初始化規則。
+2. 全部當前Wh、bh、Wo、bo，包含零長度張量（p=0時）。
+3. Adam state_dict：step計數、一階／二階動量、param_groups，
+   以及參數名稱／順序映射。恢復時對回相同參數，不能重新初始化Adam。
+4. 已完成epoch、next_epoch、保存phase及該組是否completed。
+5. conv、acc2500、theta等原實驗狀態，包含每個seed的首次成功epoch與θ*。
+6. 已累積的有效訓練耗時；resume後繼續累計，不包含離線等待時間。
+7. Python random、NumPy全域RNG、PyTorch CPU及有使用的CUDA RNG狀態；
+   若有會持續使用的獨立Generator，也要保存其state。
+   原模型初始化每seed的default_rng是初始化用途，不能用其seed冒充Adam狀態。
+8. 資料hash、shape、dtype、順序及config識別，驗證續訓仍使用同一份資料。
+9. 完成時保存該組的完整結果，供恢復後重建CSV／JSON／成功權重。
+
+B. 明確定義epoch邊界
+
+必須遵守原順序：先forward與成功判定，再決定是否執行Adam step。
+保存點只落在完整、可恢復的邊界：
+- 開始一組訓練前，可存初始checkpoint，next_epoch=1。
+- 若尚未全部成功，完成epoch e的Adam step後，存next_epoch=e+1。
+  resume直接從e+1重新forward，不能重做e的step，也不能跳過下一次判定。
+- 若在epoch e判定所有seed都曾成功，原流程不執行該次step；
+  保存completed狀態，保留當下θ*及統計，resume時不再訓練此組。
+- 原程式在epoch=10000若未全部成功，仍會執行最後一次step再離開迴圈。
+  必須保留此行為；該step後未再評估的權重不能被當成新的成功解。
+- seed的θ*是首次成功時「更新前」的參數，不是存checkpoint時的當前參數。
+
+C. 保存時機與故障處理
+
+建議預設每100個完整epoch保存一次，另外在初始、2500邊界、
+新seed首次成功後的安全邊界、每組完成及整次run完成時保存。
+支援Ctrl+C／SIGTERM時應在可完成的安全邊界保存並結束；
+不得在參數或optimizer只更新一半時寫入可續訓checkpoint。
+可用停止旗標延後到完整邊界處理；若無法保證一致性，使用上一個有效checkpoint。
+斷電、SIGKILL、OOM或遠端強制終止可能無法觸發最後保存；
+resume只保證從最近一次成功寫入的checkpoint恢復，未保存步驟會重新計算。
+
+先寫同目錄暫存檔，flush／fsync後以原子替換更新latest；
+保留上一份有效checkpoint為previous。半寫入檔不能取代有效checkpoint。
+若latest損壞，可回退previous並清楚報告回退位置；兩份均無效就報錯。
+結果與權重採相同原子寫入原則；恢復後以checkpoint作準，重建過期衍生檔案。
+同一run應防止兩個程序同時寫入；遠端異常留下鎖時需提供明確的確認／解除方式，
+不可把舊鎖當作永久無法resume，也不可默默讓兩個程序共同修改一份run。
+
+D. 恢復行為
+
+--resume指定既有run資料夾；不建立新run_id、不改tag、不覆寫成新實驗。
+從config還原task、fams、p與執行順序：已完成組跳過，進行中組讀checkpoint，
+尚未開始組才按原初始化規則開始。整次run完成時再次resume只報告完成，
+必要時補齊結果檔，不重新訓練。
+缺checkpoint但顯示running／completed時，明確報錯或由其他有效完成紀錄恢復，
+不能把丟失的進度默默當作從零開始。
+
+未在CLI提供的設定以保存的config為準，不能被argparse預設值覆蓋。
+明確指定與config衝突的task、模型、p、學習率、預算、dtype等應拒絕並解釋差異。
+可允許調整checkpoint頻率與device；device變更時須正確搬移模型、
+optimizer及RNG相關狀態，並記錄執行環境變更，不保證跨硬體逐位相同。
+資料hash或核心訓練程式版本不相容時拒絕續訓；資料不存在時清楚列出所需快取。
+
+遠端搬移時保留整個run資料夾及對應data快取，維持專案內相對位置即可恢復，
+不能要求存在原機器的絕對路徑。保存的權重／checkpoint應可用map_location
+載入到指定device，並交付一個成功權重推論與一次完整resume示例。
+原本只有theta_star的舊JSON不包含Adam及進度狀態，不能宣稱可直接resume。
+
+十一、驗收條件與交付報告
+
+1. 檢查基準與新版的前向、loss、判定、初始化及run_cell流程，
+   確認未改動原模型與實驗協定。
+2. 原Parity自我檢查正常；--selfcheck不依賴新任務資料或網路。
+3. 六個任務的X、y形狀、dtype、標籤、筆數及metadata符合文件。
+   對官方8維合成資料比較逐筆X、y；MNIST確認只包含3、5、
+   PCA僅以訓練資料擬合，PCA−正確沿用其特徵轉換。
+4. 同一資料快取重載得到相同X、y與hash；跨模型、p、seed不重抽資料。
+5. 做短程回歸測試：相同輸入／seed下，新舊程式的輸出、loss、梯度、
+   Adam更新及成功紀錄一致。耗時等非決定性欄位不要求相同。
+   可以在隔離測試中暫縮CFG加速驗證，但正式預設必須仍是40、2500、10000；
+   不以縮短測試的結果冒充完整實驗結果。
+6. 覆蓋首次成功恰在2500、2501、10000及從未成功的分類邊界，
+   驗證已成功seed繼續更新、首次θ*不覆寫及全體曾成功才提前停止。
+7. 驗證同任務／同tag重開新實驗也不覆寫，run_id不同；
+   不同任務相互隔離，CSV／JSON原欄位仍能解析，weights與checkpoints分開保存。
+8. 路徑可攜性驗證：將專案放到另一個目錄後，使用相對路徑仍可載入資料
+   並輸出結果；從不同工作目錄啟動時，相對資料參數仍以專案根目錄解析。
+   檢查程式、文件、設定與metadata，不能殘留特定機器的絕對路徑。
+9. 同一環境做不中斷與中斷後resume的對照：包含p=0、p>0、
+   ReLU、sine及複數乘積模型。比較參數、Adam動量／step、conv、θ*及統計，
+   確認沒有重複或遺漏更新；耗時允許不同。
+10. 測試在2500前後、成功seed出現之後、10000與全部成功的完成邊界resume；
+    以及組間中斷、完成checkpoint已寫但結果尚未輸出時的恢復。
+11. 測試latest損壞回退、資料／設定不一致拒絕、已完成run不重跑、
+    未提供CLI設定不被預設值覆蓋，並檢查半寫入及並行寫入保護。
+12. 從weights載入θ*重新forward，確認對應seed在同一訓練資料仍100%正確。
+    checkpoint中的未成功權重不得被標記為θ*。
+13. 交付程式、必要依賴說明、資料準備命令、訓練／resume命令、
+    權重載入示例、完整資料夾說明與測試結果。
+   報告實際下載／驗證過哪些資料；未完成的下載或長程訓練須明確列出。
+   本文件不宣稱目前已完成上述驗收，也不宣稱已取得新任務實驗結果。
